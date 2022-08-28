@@ -11,8 +11,8 @@ _start:
 	b exit
 
 possible_uppercase:
-	cmp r3, #65
-	addge r3, #32
+	cmp r3, #65 // if char is after A
+	addge r3, #32 // 32 is diff between A and a
 	bx lr
 
 
@@ -22,16 +22,16 @@ to_lower:
  // r1 counter
  // r2 length
  	mov r1, #0
-	push {lr}
+	push {lr} // needed because nested call
 	to_lower_loop:
 		ldrb r3, [r0, r1]
-		cmp r3, #90
+		cmp r3, #90 // if char is becore Z
 		blle possible_uppercase
-		strb r3, [r1, r0]
-		add r1, #1
-		cmp r1, r2
-		popeq {pc}
-		b to_lower_loop
+		strb r3, [r1, r0] // write character that might have bee updated
+		add r1, #1 // increment counter
+		cmp r1, r2 // have we reached length
+		popeq {pc} // if so jump back
+		b to_lower_loop // if not move on
 
 
 
