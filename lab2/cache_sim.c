@@ -27,11 +27,14 @@ typedef struct {
   unsigned int block_offset_bits;
   unsigned int index_bits;
   unsigned int num_tag_bits;
+  cache_map_t cache_mapping;
+  cache_org_t cache_org;
 } cache_info_t;
 
 typedef struct {
+  uint32_t rep_counter;
   cache_info_t cache_info;
-  uint64_t *cache;
+  uint32_t *cache;
 } cache_t;
 
 // DECLARE CACHES AND COUNTERS FOR THE STATS HERE
@@ -97,14 +100,14 @@ uint32_t get_index(cache_info_t cache_info, mem_access_t access) {
 }
 
 uint32_t get_access_tag(cache_info_t cache_info, mem_access_t mem_access) {
-   return mem_access.address >> (cache_info.block_offset_bits + cache_info.index_bits);
+   return mem_access.address >> (31 - cache_info.num_tag_bits);
 }
 
 uint32_t get_cache_tag(cache_info_t cache_info, uint32_t line_info) {
   // remove validity bit
   uint32_t test = line_info & ((1 << 31) - 1) ;
   // get tag part
-  test = test >> (30 - cache_info.num_tag_bits);
+  test = test >> (31 - 1 - cache_info.num_tag_bits);
   return test;
 }
 
@@ -112,25 +115,69 @@ bool is_valid(uint32_t line_info) {
   return line_info & 0x80000000;
 }
 
-void replace(cache_t cache, mem_access_t access) {
-  uint32_t shifted_acc_tag = get_access_tag(cache.cache_info, access) << (31 - 1 - cache.cache_info.num_tag_bits);
-  cache.cache[get_index(cache.cache_info, access)] = shifted_acc_tag;
-  cache.cache[get_index(cache.cache_info, access)] |= 0x80000000;
+/**
+ * Used to insert data into cache, works for both dm and fa mappings
+ * @param cache cache you want to insert data into
+ * @param access access you want to insert the data for
+ */
+void replace(cache_t *cache, mem_access_t access) {
+  if (cache->cache_info.cache_mapping == dm) {
+    // get access tag
+    uint32_t shifted_acc_tag = get_access_tag(cache->cache_info, access) << (31 - 1 - cache->cache_info.num_tag_bits);
+    // set access tag
+    cache->cache[get_index(cache->cache_info, access)] = shifted_acc_tag;
+    // set validity bit
+    cache->cache[get_index(cache->cache_info, access)] |= 0x80000000;
+  }
+  else {
+    uint32_t shifted_acc_tag = get_access_tag(cache->cache_info, access) << (31 - 1 - cache->cache_info.num_tag_bits);
+    // set tag
+    cache->cache[cache->rep_counter] = shifted_acc_tag;
+    // set validity bits
+    cache->cache[cache->rep_counter] |= 0x80000000;
+    // iterate rep counter
+    cache->rep_counter = (cache->rep_counter + 1) % cache->cache_info.num_blocks;
+    printf("Iterating rep counter to: %d\n", cache->rep_counter);
+  }
 }
 
-// guess they never miss, huh...
-bool hit_or_miss(cache_t cache, mem_access_t access) {
-  uint32_t cache_line = cache.cache[get_index(cache.cache_info, access)];
-  printf("  Index is: %d\n", get_index(cache.cache_info, access));
-  printf("  access tag is: %x\n", get_access_tag(cache.cache_info, access));
-  printf("  Cache tag is: %x\n", get_cache_tag(cache.cache_info, cache.cache[get_index(cache.cache_info, access)]));
+/**
+ * Checks whether or not a given cache line contains data for the given access
+ * @param cache_line cache line you want to check
+ * @param access access we are checking for
+ * @param cache_info info about cache, num tag bits, block offset bits and index bits
+ * @return
+ */
+bool check_cache_line(uint32_t cache_line, mem_access_t access, cache_info_t cache_info) {
   if (is_valid(cache_line)) {
-    if(get_access_tag(cache.cache_info, access) == get_cache_tag(cache.cache_info, cache_line)) {
+    if(get_access_tag(cache_info, access) == get_cache_tag(cache_info, cache_line)) {
       return true;
     }
   }
+  return false;
+}
+
+// guess they never miss, huh...
+bool hit_or_miss(cache_t *cache, mem_access_t access) {
+  printf("  looking for access tag: %x\n", get_access_tag(cache->cache_info, access));
+  if (cache->cache_info.cache_mapping == dm) {
+    uint32_t cache_line = cache->cache[get_index(cache->cache_info, access)];
+    printf("  checking cache line: %x, with access tag %x, at index: %d\n", cache_line, get_cache_tag(cache->cache_info, cache_line),
+           get_index(cache->cache_info, access));
+    if (check_cache_line(cache_line, access, cache->cache_info)) {
+      return true;
+    }
+  }
+  // fully associative
+  else {
+    for (int i = 0; i <  cache->cache_info.num_blocks; ++i) {
+      printf("  checking cache line: %x, with access tag %x\n", cache->cache[i], get_cache_tag(cache->cache_info, cache->cache[i]));
+      if (check_cache_line(cache->cache[i], access, cache->cache_info)) {
+        return true;
+      }
+    }
+  }
   replace(cache, access);
-  printf("  Cache tag after replace is: %x\n", get_cache_tag(cache.cache_info, cache.cache[get_index(cache.cache_info, access)]));
   return false;
 }
 
@@ -180,19 +227,33 @@ void main(int argc, char** argv) {
   }
 
   cache_info_t cache_info;
-  if (cache_mapping == dm && cache_org == uc) {
-    cache_info.num_blocks = cache_size / 64;
-    cache_info.block_offset_bits = 6;
-    cache_info.index_bits = mylog2(cache_info.num_blocks);
-    cache_info.num_tag_bits = 32 - cache_info.block_offset_bits - cache_info.index_bits;
+  cache_info.num_blocks = cache_size / 64;
+  cache_info.block_offset_bits = 6;
+  if (cache_mapping == dm) {
+    cache_info.cache_mapping = dm;
+    if (cache_org == uc) {
+      cache_info.index_bits = mylog2(cache_info.num_blocks);
+      cache_info.num_tag_bits = 32 - cache_info.block_offset_bits - cache_info.index_bits;
+      cache_info.cache_org = uc;
+    }
   }
+  else {
+    cache_info.cache_mapping = fa;
+    if (cache_org == uc) {
+      cache_info.index_bits = 0;
+      cache_info.num_tag_bits = 32 - cache_info.block_offset_bits - cache_info.index_bits;
+      cache_info.cache_org = uc;
+    }
+  }
+
   printf("num_blocks %d\n", cache_info.num_blocks);
   printf("block_offset_bits %d\n", cache_info.block_offset_bits);
   printf("index_bits %d\n", cache_info.index_bits);
   printf("num_tag_bits %d\n", cache_info.num_tag_bits);
   cache_t cache_box;
-  cache_box.cache = calloc(cache_info.num_blocks, sizeof(uint64_t));
+  cache_box.cache = calloc(cache_info.num_blocks, sizeof(uint32_t));
   cache_box.cache_info = cache_info;
+  cache_box.rep_counter = 0;
 
   /* Open the file mem_trace.txt to read memory accesses */
   FILE* ptr_file;
@@ -212,9 +273,9 @@ void main(int argc, char** argv) {
     printf("%d %x\n", access.accesstype, access.address);
     /* Do a cache access */
     // ADD YOUR CODE HERE
-    if (cache_mapping == dm && cache_org == uc) {
-      if (hit_or_miss(cache_box, access)) {
-	printf("Cache hit");
+    if (cache_org == uc) {
+      if (hit_or_miss(&cache_box, access)) {
+	      printf("Cache hit");
         cache_statistics.hits++;
       }
     }
