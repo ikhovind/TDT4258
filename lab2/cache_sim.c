@@ -107,14 +107,16 @@ uint32_t get_index(cache_info_t cache_info, mem_access_t access) {
 }
 
 uint32_t get_access_tag(cache_info_t cache_info, mem_access_t mem_access) {
-   return mem_access.address >> (31 - cache_info.num_tag_bits);
+  uint32_t test = mem_access.address >> (32 - cache_info.num_tag_bits);
+  return test;
 }
 
 uint32_t get_cache_tag(cache_info_t cache_info, uint32_t line_info) {
   // remove validity bit
   uint32_t test = line_info & ((1 << 31) - 1) ;
   // get tag part
-  test = test >> (31 - 1 - cache_info.num_tag_bits);
+  // TODO hvorfor ikke 32 her??
+  test = test >> (32 - 1 - cache_info.num_tag_bits);
   return test;
 }
 
@@ -122,6 +124,12 @@ bool is_valid(uint32_t line_info) {
   return line_info & 0x80000000;
 }
 
+/**
+ * Gets the next replacement index in a full fa cache
+ * @param replace_order array containing insertions times of cache lines
+ * @param cache_info
+ * @return
+ */
 uint8_t get_index_of_first_in(const uint8_t *replace_order, cache_info_t cache_info) {
   uint8_t max = 0;
   for (int i = 0; i < cache_info.num_blocks; ++i) {
@@ -146,7 +154,7 @@ uint8_t get_index_of_first_in(const uint8_t *replace_order, cache_info_t cache_i
 }
 
 /**
- * Used to get insertion index from fa mapped cache
+ * Used to get next index to insert data at in fa mapped cache
  * @param data
  * @param cache_info
  * @return
@@ -165,17 +173,17 @@ uint8_t get_insertion_index(cache_data_t *data, cache_info_t cache_info) {
  * @param cache data_cache you want to insert data into
  * @param access access you want to insert the data for
  */
-void replace(cache_data_t *cache, cache_info_t cache_info, mem_access_t access) {
+void insert_access(cache_data_t *cache, cache_info_t cache_info, mem_access_t access) {
   if (cache_info.cache_mapping == dm) {
     // get access tag
-    uint32_t shifted_acc_tag = get_access_tag(cache_info, access) << (31 - 1 - cache_info.num_tag_bits);
+    uint32_t shifted_acc_tag = get_access_tag(cache_info, access) << (32 - 1 - cache_info.num_tag_bits);
     // set access tag
     cache->data[get_index(cache_info, access)] = shifted_acc_tag;
     // set validity bit
     cache->data[get_index(cache_info, access)] |= 0x80000000;
   }
   else {
-    uint32_t shifted_acc_tag = get_access_tag(cache_info, access) << (31 - 1 - cache_info.num_tag_bits);
+    uint32_t shifted_acc_tag = get_access_tag(cache_info, access) << (32 - 1 - cache_info.num_tag_bits);
     uint8_t index = get_insertion_index(cache, cache_info);
     // set tag
     cache->data[index] = shifted_acc_tag;
@@ -190,7 +198,7 @@ void replace(cache_data_t *cache, cache_info_t cache_info, mem_access_t access) 
 void nullify(cache_data_t *cache, uint8_t index) {
   cache->data[index] = 0;
   /**
-   * do we need to replace rep counter
+   * do we need to insert_access rep counter
    *    - this sets a zero, so counter is replaced on next insertion
    *    - meaning that any access that finds itself in cache does not need rep order
    *    - next access does not need rep order becuase this spot is empty
@@ -245,7 +253,7 @@ bool check_caches(cache_t *cache, mem_access_t access, access_t access_type) {
   if (access_type == data || cache->cache_info.cache_org == uc) {
     printf("searching data cache\n");
     uint8_t res = hit_or_miss(&cache->data_cache, cache->cache_info, access);
-    replace(&cache->data_cache, cache->cache_info, access);
+    insert_access(&cache->data_cache, cache->cache_info, access);
     // if it was a cache hit, we know that this memory address should not exist in the other cache
     if (res == UINT8_MAX && cache->cache_info.cache_org == sc) {
       printf("  checking instruction conflict\n");
@@ -261,7 +269,7 @@ bool check_caches(cache_t *cache, mem_access_t access, access_t access_type) {
   else {
     printf("searching instruction cache\n");
     uint8_t res = hit_or_miss(&cache->instruction_cache, cache->cache_info, access);
-    replace(&cache->instruction_cache, cache->cache_info, access);
+    insert_access(&cache->instruction_cache, cache->cache_info, access);
     // if it was a cache hit, we know that this memory address should not exist in the other cache, therefore do not need to check it
     if (res == UINT8_MAX) {
       printf("  searching data conflict\n");
@@ -359,7 +367,7 @@ void main(int argc, char** argv) {
 
   /* Open the file mem_trace.txt to read memory accesses */
   FILE* ptr_file;
-  ptr_file = fopen("mem_trace.txt", "r");
+  ptr_file = fopen("dm_fifty.txt", "r");
   if (!ptr_file) {
     printf("Unable to open the trace file\n");
     exit(1);
