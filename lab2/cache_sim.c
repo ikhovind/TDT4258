@@ -8,6 +8,7 @@
 typedef enum { dm, fa } cache_map_t;
 typedef enum { uc, sc } cache_org_t;
 typedef enum { instruction, data } access_t;
+typedef struct fifo_node_t fifo_node_t;
 
 typedef struct {
   uint32_t address;
@@ -22,20 +23,26 @@ typedef struct {
   // remove the accesses or hits
 } cache_stat_t;
 
+// Singly linked list to keep track of replacement order
+struct fifo_node_t {
+  fifo_node_t *next;
+  uint8_t index;
+};
+
 typedef struct {
-  unsigned int num_blocks;
-  unsigned int block_offset_bits;
-  unsigned int index_bits;
-  unsigned int num_tag_bits;
+  uint8_t num_blocks;
+  uint8_t block_offset_bits;
+  uint8_t index_bits;
+  uint8_t num_tag_bits;
   cache_map_t cache_mapping;
   cache_org_t cache_org;
 } cache_info_t;
 
 typedef struct {
-    // len equal to num cache num_blocks, used to keep track of replacement, which cannot be guaranteed to be in rising order
-    uint8_t *rep_order;
+    // contains info for each cache line
     uint32_t *data;
-    uint8_t rep_order_counter;
+    // replacement policy
+    fifo_node_t *queue;
 } cache_data_t;
 
 typedef struct {
@@ -52,7 +59,7 @@ cache_map_t cache_mapping;
 cache_org_t cache_org;
 
 
-static unsigned int mylog2(unsigned int val) {
+static uint8_t mylog2(uint32_t val) {
     unsigned int ret = 0;
     while (val > 1) {
         val >>= 1;
@@ -102,55 +109,30 @@ mem_access_t read_transaction(FILE* ptr_file) {
 
 // gets the index of address with given data_cache info
 uint32_t get_index(cache_info_t cache_info, mem_access_t access) {
-  unsigned mask = (1 << cache_info.index_bits) - 1;
+  unsigned mask = (1 << (cache_info.index_bits - 1) - 1);
   return (access.address >> cache_info.block_offset_bits) & mask;
 }
 
+/**
+ * Gets tag of memory address from access
+ */
 uint32_t get_access_tag(cache_info_t cache_info, mem_access_t mem_access) {
-  uint32_t test = mem_access.address >> (32 - cache_info.num_tag_bits);
-  return test;
-}
-
-uint32_t get_cache_tag(cache_info_t cache_info, uint32_t line_info) {
-  // remove validity bit
-  uint32_t test = line_info & ((1 << 31) - 1) ;
-  // get tag part
-  // TODO hvorfor ikke 32 her??
-  test = test >> (32 - 1 - cache_info.num_tag_bits);
-  return test;
-}
-
-bool is_valid(uint32_t line_info) {
-  return line_info & 0x80000000;
+  return mem_access.address >> (32 - cache_info.num_tag_bits);
 }
 
 /**
- * Gets the next replacement index in a full fa cache
- * @param replace_order array containing insertions times of cache lines
- * @param cache_info
- * @return
+ * Gets tag part of cache line
  */
-uint8_t get_index_of_first_in(const uint8_t *replace_order, cache_info_t cache_info) {
-  uint8_t max = 0;
-  for (int i = 0; i < cache_info.num_blocks; ++i) {
-    if (max < replace_order[i]) {
-      max = replace_order[i];
-    }
-  }
-  uint8_t min = UINT8_MAX;
-  uint8_t index = 65;
-  for (uint8_t i = 0; i < cache_info.num_blocks; ++i) {
-    if ((max - replace_order[i]) < 64 && min > replace_order[i]) {
-      min = replace_order[i];
-      index = i;
-    }
-  }
-  if (index > 63) {
-    printf("Invalid index value when finding replacement");
-    exit(1);
-  }
-  printf("Found index is: %d\n", index);
-  return index;
+uint32_t get_cache_tag(cache_info_t cache_info, uint32_t line_info) {
+  // remove validity bit
+  uint32_t tag_bytes = line_info & ((1 << 31) - 1) ;
+  // get tag part
+  return tag_bytes >> (32 - 1 - cache_info.num_tag_bits);
+}
+
+// checks validity bit
+bool is_valid(uint32_t line_info) {
+  return line_info & 0x80000000;
 }
 
 /**
@@ -165,7 +147,12 @@ uint8_t get_insertion_index(cache_data_t *data, cache_info_t cache_info) {
       return i;
     }
   }
-  return get_index_of_first_in(data->rep_order, cache_info);
+  // if there are no blank elements there must be items in the queue
+  fifo_node_t *temp = data->queue;
+  data->queue = data->queue->next;
+  uint8_t ix = temp->index;
+  free(temp);
+  return ix;
 }
 
 /**
@@ -189,23 +176,44 @@ void insert_access(cache_data_t *cache, cache_info_t cache_info, mem_access_t ac
     cache->data[index] = shifted_acc_tag;
     // set validity bits
     cache->data[index] |= 0x80000000;
-    // iterate rep counter
-    //cache->rep_counter = (cache->rep_counter + 1) % cache->cache_info.num_blocks;
-    cache->rep_order[index] = (++cache->rep_order_counter % UINT8_MAX);
+
+    // add new item to fifo queue
+    fifo_node_t *next_item = malloc(sizeof(fifo_node_t));
+    *next_item = (fifo_node_t) { NULL, index};
+    if (cache->queue) {
+      fifo_node_t *last = cache->queue;
+      while (last->next) {
+        last = last->next;
+      }
+      last->next = next_item;
+    }
+    else {
+      cache->queue = next_item;
+    }
   }
 }
 
-void nullify(cache_data_t *cache, uint8_t index) {
+void remove_index_from_cache(cache_data_t *cache, uint8_t index) {
   cache->data[index] = 0;
-  /**
-   * do we need to insert_access rep counter
-   *    - this sets a zero, so counter is replaced on next insertion
-   *    - meaning that any access that finds itself in cache does not need rep order
-   *    - next access does not need rep order becuase this spot is empty
-   *    - next access replaces rep order
-   *    - e.g. this rep order is replaced before it is needed.
-   *    - todo maybe bug with many data lookups replacing instruction elements in cache fucking up rep order
-   */
+  fifo_node_t *head = cache->queue;
+  fifo_node_t *temp;
+  if (head->index == index) {
+    cache->queue = head->next;
+    free(head);
+  }
+  else {
+    while (head && head->next) {
+      if (head->next->index == index) {
+        temp = head->next;
+        head->next = head->next->next;
+        free(temp);
+        return;
+      }
+      else {
+        head = head->next;
+      }
+    }
+  }
 }
 
 
@@ -240,7 +248,6 @@ uint8_t hit_or_miss(cache_data_t *cache, cache_info_t cache_info, mem_access_t a
   // fully associative
   else {
     for (uint8_t i = 0; i <  cache_info.num_blocks; ++i) {
-      printf("  checking data_cache line: %x, with access tag %x\n", cache->data[i], get_cache_tag(cache_info, cache->data[i]));
       if (check_cache_line(cache->data[i], access, cache_info)) {
         return i;
       }
@@ -249,18 +256,21 @@ uint8_t hit_or_miss(cache_data_t *cache, cache_info_t cache_info, mem_access_t a
   return UINT8_MAX;
 }
 
-bool check_caches(cache_t *cache, mem_access_t access, access_t access_type) {
+bool check_cache(cache_t *cache, mem_access_t access, access_t access_type) {
+  // if unified cache then we only use data cache
   if (access_type == data || cache->cache_info.cache_org == uc) {
     printf("searching data cache\n");
     uint8_t res = hit_or_miss(&cache->data_cache, cache->cache_info, access);
     insert_access(&cache->data_cache, cache->cache_info, access);
-    // if it was a cache hit, we know that this memory address should not exist in the other cache
+    // if it was not a cache hit, we have to invalidate cache line if it exists in other cache
     if (res == UINT8_MAX && cache->cache_info.cache_org == sc) {
       printf("  checking instruction conflict\n");
+      // search in other cache
       uint8_t other_res = hit_or_miss(&cache->instruction_cache, cache->cache_info, access);
       if (other_res != UINT8_MAX) {
         printf("    found conflict, nullifying\n");
-        nullify(&cache->instruction_cache, other_res);
+        // erase other cache line if found
+        remove_index_from_cache(&cache->instruction_cache, other_res);
       }
       return false;
     }
@@ -276,7 +286,7 @@ bool check_caches(cache_t *cache, mem_access_t access, access_t access_type) {
       uint8_t other_res = hit_or_miss(&cache->data_cache, cache->cache_info, access);
       if (other_res != UINT8_MAX) {
         printf("    found conflict, nullifying\n");
-        nullify(&cache->data_cache, other_res);
+        remove_index_from_cache(&cache->data_cache, other_res);
       }
       return false;
     }
@@ -356,18 +366,16 @@ void main(int argc, char** argv) {
   printf("num_tag_bits %d\n", cache_info.num_tag_bits);
   cache_t cache_box;
   cache_box.data_cache.data = calloc(cache_info.num_blocks, sizeof(uint32_t));
-  cache_box.data_cache.rep_order = calloc(cache_info.num_blocks, sizeof(uint8_t));
-  cache_box.data_cache.rep_order_counter = 0;
+  cache_box.data_cache.queue = NULL;
 
   cache_box.instruction_cache.data = calloc(cache_info.num_blocks, sizeof(uint32_t));
-  cache_box.instruction_cache.rep_order = calloc(cache_info.num_blocks, sizeof(uint8_t));
-  cache_box.instruction_cache.rep_order_counter = 0;
+  cache_box.instruction_cache.queue = NULL;
 
   cache_box.cache_info = cache_info;
 
   /* Open the file mem_trace.txt to read memory accesses */
   FILE* ptr_file;
-  ptr_file = fopen("dm_fifty.txt", "r");
+  ptr_file = fopen("mem_trace2.txt", "r");
   if (!ptr_file) {
     printf("Unable to open the trace file\n");
     exit(1);
@@ -383,7 +391,7 @@ void main(int argc, char** argv) {
     printf("%d %x\n", access.accesstype, access.address);
     /* Do a data_cache access */
     // ADD YOUR CODE HERE
-    if (check_caches(&cache_box, access, access.accesstype)) {
+    if (check_cache(&cache_box, access, access.accesstype)) {
       printf("Cache hit\n");
       cache_statistics.hits++;
     }
@@ -406,7 +414,19 @@ void main(int argc, char** argv) {
   /* Close the trace file */
   fclose(ptr_file);
   free(cache_box.data_cache.data);
-  free(cache_box.data_cache.rep_order);
   free(cache_box.instruction_cache.data);
-  free(cache_box.instruction_cache.rep_order);
+  fifo_node_t *counter = cache_box.data_cache.queue;
+  while (counter) {
+    fifo_node_t *temp = counter;
+    counter = counter->next;
+    free(temp);
+
+  }
+
+  counter = cache_box.instruction_cache.queue;
+  while (counter) {
+    fifo_node_t *temp = counter;
+    counter = counter->next;
+    free(temp);
+  }
 }
