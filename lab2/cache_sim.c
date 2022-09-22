@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <inttypes.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -107,10 +108,25 @@ mem_access_t read_transaction(FILE* ptr_file) {
   return access;
 }
 
-// gets the index of address with given data_cache info
-uint32_t get_index(cache_info_t cache_info, mem_access_t access) {
-  unsigned mask = (1 << (cache_info.index_bits - 1) - 1);
-  return (access.address >> cache_info.block_offset_bits) & mask;
+// gets the insertion position of given address in dm mapped cache
+uint32_t get_dm_index(cache_info_t cache_info, uint32_t address) {
+  unsigned mask = (1 << (cache_info.index_bits)) - 1;
+  return (address >> cache_info.block_offset_bits) & mask;
+}
+
+// gets next insertion position of fa mapped cache
+uint8_t get_fa_index(cache_data_t *data, cache_info_t cache_info) {
+  for (uint8_t i = 0; i < cache_info.num_blocks; ++i) {
+    if (data->data[i] == 0) {
+      return i;
+    }
+  }
+  // if there are no blank elements there must be items in the queue
+  fifo_node_t *temp = data->queue;
+  data->queue = data->queue->next;
+  uint8_t ix = temp->index;
+  free(temp);
+  return ix;
 }
 
 /**
@@ -135,25 +151,6 @@ bool is_valid(uint32_t line_info) {
   return line_info & 0x80000000;
 }
 
-/**
- * Used to get next index to insert data at in fa mapped cache
- * @param data
- * @param cache_info
- * @return
- */
-uint8_t get_insertion_index(cache_data_t *data, cache_info_t cache_info) {
-  for (uint8_t i = 0; i < cache_info.num_blocks; ++i) {
-    if (data->data[i] == 0) {
-      return i;
-    }
-  }
-  // if there are no blank elements there must be items in the queue
-  fifo_node_t *temp = data->queue;
-  data->queue = data->queue->next;
-  uint8_t ix = temp->index;
-  free(temp);
-  return ix;
-}
 
 /**
  * Used to insert data into given cache, works for both dm and fa mappings
@@ -164,14 +161,16 @@ void insert_access(cache_data_t *cache, cache_info_t cache_info, mem_access_t ac
   if (cache_info.cache_mapping == dm) {
     // get access tag
     uint32_t shifted_acc_tag = get_access_tag(cache_info, access) << (32 - 1 - cache_info.num_tag_bits);
+
+    uint32_t index = get_dm_index(cache_info, access.address);
     // set access tag
-    cache->data[get_index(cache_info, access)] = shifted_acc_tag;
+    cache->data[index] = shifted_acc_tag;
     // set validity bit
-    cache->data[get_index(cache_info, access)] |= 0x80000000;
+    cache->data[index] |= 0x80000000;
   }
   else {
     uint32_t shifted_acc_tag = get_access_tag(cache_info, access) << (32 - 1 - cache_info.num_tag_bits);
-    uint8_t index = get_insertion_index(cache, cache_info);
+    uint8_t index = get_fa_index(cache, cache_info);
     // set tag
     cache->data[index] = shifted_acc_tag;
     // set validity bits
@@ -179,7 +178,8 @@ void insert_access(cache_data_t *cache, cache_info_t cache_info, mem_access_t ac
 
     // add new item to fifo queue
     fifo_node_t *next_item = malloc(sizeof(fifo_node_t));
-    *next_item = (fifo_node_t) { NULL, index};
+    *next_item = (fifo_node_t) { .next = NULL, .index = index};
+
     if (cache->queue) {
       fifo_node_t *last = cache->queue;
       while (last->next) {
@@ -193,11 +193,12 @@ void insert_access(cache_data_t *cache, cache_info_t cache_info, mem_access_t ac
   }
 }
 
+// clears index from cache and removes it from fifo queue if applicable
 void remove_index_from_cache(cache_data_t *cache, uint8_t index) {
   cache->data[index] = 0;
   fifo_node_t *head = cache->queue;
   fifo_node_t *temp;
-  if (head->index == index) {
+  if (head && head->index == index) {
     cache->queue = head->next;
     free(head);
   }
@@ -234,19 +235,20 @@ bool check_cache_line(uint32_t cache_line, mem_access_t access, cache_info_t cac
   return false;
 }
 
+// returns 256 UINT8_MAX if not found, otherwise index
 // guess they never miss, huh...
 uint8_t hit_or_miss(cache_data_t *cache, cache_info_t cache_info, mem_access_t access) {
-  printf("  looking for access tag: %x\n", get_access_tag(cache_info, access));
   if (cache_info.cache_mapping == dm) {
-    uint8_t index = get_index(cache_info, access);
+    uint8_t index = get_dm_index(cache_info, access.address);
     uint32_t cache_line = cache->data[index];
-    printf("  checking data_cache line: %x, with access tag %x, at index: %d\n", cache_line, get_cache_tag(cache_info, cache_line), get_index(cache_info, access));
+    // does cache match?
     if (check_cache_line(cache_line, access, cache_info)) {
       return index;
     }
   }
   // fully associative
   else {
+    // iterate through all possible positions and see if we find match
     for (uint8_t i = 0; i <  cache_info.num_blocks; ++i) {
       if (check_cache_line(cache->data[i], access, cache_info)) {
         return i;
@@ -256,42 +258,39 @@ uint8_t hit_or_miss(cache_data_t *cache, cache_info_t cache_info, mem_access_t a
   return UINT8_MAX;
 }
 
-bool check_cache(cache_t *cache, mem_access_t access, access_t access_type) {
-  // if unified cache then we only use data cache
-  if (access_type == data || cache->cache_info.cache_org == uc) {
-    printf("searching data cache\n");
-    uint8_t res = hit_or_miss(&cache->data_cache, cache->cache_info, access);
-    insert_access(&cache->data_cache, cache->cache_info, access);
-    // if it was not a cache hit, we have to invalidate cache line if it exists in other cache
-    if (res == UINT8_MAX && cache->cache_info.cache_org == sc) {
-      printf("  checking instruction conflict\n");
-      // search in other cache
-      uint8_t other_res = hit_or_miss(&cache->instruction_cache, cache->cache_info, access);
-      if (other_res != UINT8_MAX) {
-        printf("    found conflict, nullifying\n");
-        // erase other cache line if found
-        remove_index_from_cache(&cache->instruction_cache, other_res);
-      }
-      return false;
-    }
-    return res != UINT8_MAX;
-  }
-  else {
-    printf("searching instruction cache\n");
-    uint8_t res = hit_or_miss(&cache->instruction_cache, cache->cache_info, access);
-    insert_access(&cache->instruction_cache, cache->cache_info, access);
-    // if it was a cache hit, we know that this memory address should not exist in the other cache, therefore do not need to check it
+// checks caches, if present in other but not this, it is removed from other
+bool check_caches(cache_data_t *this_cache, cache_data_t *other_cache, cache_info_t cache_info, mem_access_t access) {
+    uint8_t res = hit_or_miss(this_cache, cache_info, access);
+    // if cache miss 
     if (res == UINT8_MAX) {
-      printf("  searching data conflict\n");
-      uint8_t other_res = hit_or_miss(&cache->data_cache, cache->cache_info, access);
-      if (other_res != UINT8_MAX) {
-        printf("    found conflict, nullifying\n");
-        remove_index_from_cache(&cache->data_cache, other_res);
+      // insert it
+      insert_access(this_cache, cache_info, access);
+      // if split
+      if (cache_info.cache_org == sc) {
+        // search in other cache
+        uint8_t other_res = hit_or_miss(other_cache, cache_info, access);
+        // if present
+        if (other_res != UINT8_MAX) {
+          // then delete it
+          remove_index_from_cache(other_cache, other_res);
+        }
       }
       return false;
     }
     return true;
-  }
+}
+
+bool perform_fetch(cache_t *cache, mem_access_t access) {
+    if (cache->cache_info.cache_org == sc) {
+      if (access.accesstype == instruction) {
+        // split cache instruction fetch
+        return (check_caches(&cache->instruction_cache, &cache->data_cache, cache->cache_info, access));
+      }
+      // split cache data fetch
+      return (check_caches(&cache->data_cache, &cache->instruction_cache, cache->cache_info, access));
+    }
+    // unified cache uses only data cache
+    return (check_caches(&cache->data_cache, &cache->instruction_cache, cache->cache_info, access));
 }
 
 void main(int argc, char** argv) {
@@ -387,16 +386,10 @@ void main(int argc, char** argv) {
     access = read_transaction(ptr_file);
     // If no transactions left, break out of loop
     if (access.address == 0) break;
-    cache_statistics.accesses++;
-    printf("%d %x\n", access.accesstype, access.address);
-    /* Do a data_cache access */
     // ADD YOUR CODE HERE
-    if (check_cache(&cache_box, access, access.accesstype)) {
-      printf("Cache hit\n");
+    cache_statistics.accesses++;
+    if (perform_fetch(&cache_box, access)) {
       cache_statistics.hits++;
-    }
-    else {
-      printf("Cache miss\n");
     }
   }
 
