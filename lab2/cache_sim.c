@@ -1,10 +1,10 @@
 #include <assert.h>
 #include <inttypes.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdbool.h>
 
 typedef enum { dm, fa } cache_map_t;
 typedef enum { uc, sc } cache_org_t;
@@ -40,10 +40,10 @@ typedef struct {
 } cache_info_t;
 
 typedef struct {
-    // contains info for each cache line
-    uint32_t *data;
-    // replacement policy
-    fifo_node_t *queue;
+  // contains info for each cache line
+  uint32_t *data;
+  // replacement policy
+  fifo_node_t *queue;
 } cache_data_t;
 
 typedef struct {
@@ -59,14 +59,13 @@ uint32_t block_size = 64;
 cache_map_t cache_mapping;
 cache_org_t cache_org;
 
-
 static uint8_t mylog2(uint32_t val) {
-    unsigned int ret = 0;
-    while (val > 1) {
-        val >>= 1;
-        ret++;
-    }
-    return ret;
+  unsigned int ret = 0;
+  while (val > 1) {
+    val >>= 1;
+    ret++;
+  }
+  return ret;
 }
 
 // USE THIS FOR YOUR CACHE STATISTICS
@@ -76,10 +75,10 @@ cache_stat_t cache_statistics;
  * 1) access type (instruction or data access
  * 2) memory address
  */
-mem_access_t read_transaction(FILE* ptr_file) {
+mem_access_t read_transaction(FILE *ptr_file) {
   char buf[1000];
-  char* token;
-  char* string = buf;
+  char *token;
+  char *string = buf;
   mem_access_t access;
 
   if (fgets(buf, 1000, ptr_file) != NULL) {
@@ -141,33 +140,32 @@ uint32_t get_access_tag(cache_info_t cache_info, mem_access_t mem_access) {
  */
 uint32_t get_cache_tag(cache_info_t cache_info, uint32_t line_info) {
   // remove validity bit
-  uint32_t tag_bytes = line_info & ((1 << 31) - 1) ;
+  uint32_t tag_bytes = line_info & ((1 << 31) - 1);
   // get tag part
   return tag_bytes >> (32 - 1 - cache_info.num_tag_bits);
 }
 
 // checks validity bit
-bool is_valid(uint32_t line_info) {
-  return line_info & 0x80000000;
-}
-
+bool is_valid(uint32_t line_info) { return line_info & 0x80000000; }
 
 /**
  * Used to insert data into given cache, works for both dm and fa mappings
  */
-void insert_access(cache_data_t *cache, cache_info_t cache_info, mem_access_t access) {
+void insert_access(cache_data_t *cache, cache_info_t cache_info,
+                   mem_access_t access) {
   if (cache_info.cache_mapping == dm) {
     // get access tag
-    uint32_t shifted_acc_tag = get_access_tag(cache_info, access) << (32 - 1 - cache_info.num_tag_bits);
+    uint32_t shifted_acc_tag = get_access_tag(cache_info, access)
+                               << (32 - 1 - cache_info.num_tag_bits);
 
     uint32_t index = get_dm_index(cache_info, access.address);
     // set access tag
     cache->data[index] = shifted_acc_tag;
     // set validity bit
     cache->data[index] |= 0x80000000;
-  }
-  else {
-    uint32_t shifted_acc_tag = get_access_tag(cache_info, access) << (32 - 1 - cache_info.num_tag_bits);
+  } else {
+    uint32_t shifted_acc_tag = get_access_tag(cache_info, access)
+                               << (32 - 1 - cache_info.num_tag_bits);
     uint8_t index = get_next_fa_index(cache, cache_info);
     // set tag
     cache->data[index] = shifted_acc_tag;
@@ -176,7 +174,7 @@ void insert_access(cache_data_t *cache, cache_info_t cache_info, mem_access_t ac
 
     // add new item to fifo queue
     fifo_node_t *next_item = malloc(sizeof(fifo_node_t));
-    *next_item = (fifo_node_t) { .next = NULL, .index = index};
+    *next_item = (fifo_node_t){.next = NULL, .index = index};
 
     if (cache->queue) {
       fifo_node_t *last = cache->queue;
@@ -184,8 +182,7 @@ void insert_access(cache_data_t *cache, cache_info_t cache_info, mem_access_t ac
         last = last->next;
       }
       last->next = next_item;
-    }
-    else {
+    } else {
       cache->queue = next_item;
     }
   }
@@ -199,34 +196,34 @@ void remove_index_from_cache(cache_data_t *cache, uint8_t index) {
   if (head && head->index == index) {
     cache->queue = head->next;
     free(head);
-  }
-  else {
+  } else {
     while (head && head->next) {
       if (head->next->index == index) {
         temp = head->next;
         head->next = head->next->next;
         free(temp);
         return;
-      }
-      else {
+      } else {
         head = head->next;
       }
     }
   }
 }
 
-
-
 /**
- * Checks whether or not a given data_cache line contains data for the given access
+ * Checks whether or not a given data_cache line contains data for the given
+ * access
  * @param cache_line data_cache line you want to check
  * @param access access we are checking for
- * @param cache_info info about data_cache, num tag bits, block offset bits and index bits
+ * @param cache_info info about data_cache, num tag bits, block offset bits and
+ * index bits
  * @return
  */
-bool is_cache_line_valid(uint32_t cache_line, mem_access_t access, cache_info_t cache_info) {
+bool is_cache_line_valid(uint32_t cache_line, mem_access_t access,
+                         cache_info_t cache_info) {
   if (is_valid(cache_line)) {
-    if(get_access_tag(cache_info, access) == get_cache_tag(cache_info, cache_line)) {
+    if (get_access_tag(cache_info, access) ==
+        get_cache_tag(cache_info, cache_line)) {
       return true;
     }
   }
@@ -234,7 +231,8 @@ bool is_cache_line_valid(uint32_t cache_line, mem_access_t access, cache_info_t 
 }
 
 // returns UINT8_MAX if not found, otherwise index
-uint8_t get_index_if_present(cache_data_t *cache, cache_info_t cache_info, mem_access_t access) {
+uint8_t get_index_if_present(cache_data_t *cache, cache_info_t cache_info,
+                             mem_access_t access) {
   if (cache_info.cache_mapping == dm) {
     uint8_t index = get_dm_index(cache_info, access.address);
     uint32_t cache_line = cache->data[index];
@@ -246,7 +244,7 @@ uint8_t get_index_if_present(cache_data_t *cache, cache_info_t cache_info, mem_a
   // fully associative
   else {
     // iterate through all possible positions and see if we find match
-    for (uint8_t i = 0; i <  cache_info.num_blocks; ++i) {
+    for (uint8_t i = 0; i < cache_info.num_blocks; ++i) {
       if (is_cache_line_valid(cache->data[i], access, cache_info)) {
         return i;
       }
@@ -256,41 +254,45 @@ uint8_t get_index_if_present(cache_data_t *cache, cache_info_t cache_info, mem_a
 }
 
 //  if present in other but not this, it is removed from other
-bool perform_lookup(cache_data_t *this_cache, cache_data_t *other_cache, cache_info_t cache_info, mem_access_t access) {
-    uint8_t res = get_index_if_present(this_cache, cache_info, access);
-    // if cache miss 
-    if (res == UINT8_MAX) {
-      // insert it
-      insert_access(this_cache, cache_info, access);
-      // if split
-      if (cache_info.cache_org == sc) {
-        // search in other cache
-        uint8_t other_res = get_index_if_present(other_cache, cache_info, access);
-        // if present
-        if (other_res != UINT8_MAX) {
-          // then delete it
-          remove_index_from_cache(other_cache, other_res);
-        }
+bool perform_lookup(cache_data_t *this_cache, cache_data_t *other_cache,
+                    cache_info_t cache_info, mem_access_t access) {
+  uint8_t res = get_index_if_present(this_cache, cache_info, access);
+  // if cache miss
+  if (res == UINT8_MAX) {
+    // insert it
+    insert_access(this_cache, cache_info, access);
+    // if split
+    if (cache_info.cache_org == sc) {
+      // search in other cache
+      uint8_t other_res = get_index_if_present(other_cache, cache_info, access);
+      // if present
+      if (other_res != UINT8_MAX) {
+        // then delete it
+        remove_index_from_cache(other_cache, other_res);
       }
-      return false;
     }
-    return true;
+    return false;
+  }
+  return true;
 }
 
 bool perform_fetch(cache_t *cache, mem_access_t access) {
-    if (cache->cache_info.cache_org == uc) {
-      // unified cache uses only data cache
-      return (perform_lookup(&cache->data_cache, &cache->instruction_cache, cache->cache_info, access));
-    }
-    if (access.accesstype == instruction) {
-      // split cache instruction fetch
-      return (perform_lookup(&cache->instruction_cache, &cache->data_cache, cache->cache_info, access));
-    }
-    // split cache data fetch
-    return (perform_lookup(&cache->data_cache, &cache->instruction_cache, cache->cache_info, access));
+  if (cache->cache_info.cache_org == uc) {
+    // unified cache uses only data cache
+    return (perform_lookup(&cache->data_cache, &cache->instruction_cache,
+                           cache->cache_info, access));
+  }
+  if (access.accesstype == instruction) {
+    // split cache instruction fetch
+    return (perform_lookup(&cache->instruction_cache, &cache->data_cache,
+                           cache->cache_info, access));
+  }
+  // split cache data fetch
+  return (perform_lookup(&cache->data_cache, &cache->instruction_cache,
+                         cache->cache_info, access));
 }
 
-void main(int argc, char** argv) {
+void main(int argc, char **argv) {
   // Reset statistics:
   memset(&cache_statistics, 0, sizeof(cache_stat_t));
 
@@ -304,7 +306,8 @@ void main(int argc, char** argv) {
    */
   if (argc != 4) { /* argc should be 2 for correct execution */
     printf(
-        "Usage: ./cache_sim [data_cache size: 128-4096] [data_cache mapping: dm|fa] "
+        "Usage: ./cache_sim [data_cache size: 128-4096] [data_cache mapping: "
+        "dm|fa] "
         "[data_cache organization: uc|sc]\n");
     exit(0);
   } else {
@@ -312,7 +315,6 @@ void main(int argc, char** argv) {
 
     /* Set data_cache size */
     cache_size = atoi(argv[1]);
-
 
     /* Set Cache Mapping */
     if (strcmp(argv[2], "dm") == 0) {
@@ -340,8 +342,7 @@ void main(int argc, char** argv) {
   if (cache_org == sc) {
     cache_size = cache_size / 2;
     cache_info.cache_org = sc;
-  }
-  else {
+  } else {
     cache_info.cache_org = uc;
   }
   cache_info.num_blocks = cache_size / 64;
@@ -350,12 +351,12 @@ void main(int argc, char** argv) {
   if (cache_mapping == dm) {
     cache_info.cache_mapping = dm;
     cache_info.num_index_bits = mylog2(cache_info.num_blocks);
-  }
-  else {
+  } else {
     cache_info.cache_mapping = fa;
     cache_info.num_index_bits = 0;
   }
-  cache_info.num_tag_bits = 32 - cache_info.num_block_offset_bits - cache_info.num_index_bits;
+  cache_info.num_tag_bits =
+      32 - cache_info.num_block_offset_bits - cache_info.num_index_bits;
 
   printf("num_blocks %d\n", cache_info.num_blocks);
   printf("block_offset_bits %d\n", cache_info.num_block_offset_bits);
@@ -365,13 +366,14 @@ void main(int argc, char** argv) {
   cache_box.data_cache.data = calloc(cache_info.num_blocks, sizeof(uint32_t));
   cache_box.data_cache.queue = NULL;
 
-  cache_box.instruction_cache.data = calloc(cache_info.num_blocks, sizeof(uint32_t));
+  cache_box.instruction_cache.data =
+      calloc(cache_info.num_blocks, sizeof(uint32_t));
   cache_box.instruction_cache.queue = NULL;
 
   cache_box.cache_info = cache_info;
 
   /* Open the file mem_trace.txt to read memory accesses */
-  FILE* ptr_file;
+  FILE *ptr_file;
   ptr_file = fopen("dm_fifty.txt", "r");
   if (!ptr_file) {
     printf("Unable to open the trace file\n");
@@ -411,7 +413,6 @@ void main(int argc, char** argv) {
     fifo_node_t *temp = counter;
     counter = counter->next;
     free(temp);
-
   }
 
   counter = cache_box.instruction_cache.queue;
