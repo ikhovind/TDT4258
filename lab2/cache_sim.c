@@ -219,7 +219,7 @@ void remove_index_from_cache(cache_data_t *cache, uint8_t index) {
  * index bits
  * @return
  */
-bool is_cache_line_valid(uint32_t cache_line, mem_access_t access,
+bool is_cache_line_hit(uint32_t cache_line, mem_access_t access,
                          cache_info_t cache_info) {
   if (is_valid(cache_line)) {
     if (get_access_tag(cache_info, access) ==
@@ -237,7 +237,7 @@ uint8_t get_index_if_present(cache_data_t *cache, cache_info_t cache_info,
     uint8_t index = get_dm_index(cache_info, access.address);
     uint32_t cache_line = cache->data[index];
     // does cache match?
-    if (is_cache_line_valid(cache_line, access, cache_info)) {
+    if (is_cache_line_hit(cache_line, access, cache_info)) {
       return index;
     }
   }
@@ -245,7 +245,7 @@ uint8_t get_index_if_present(cache_data_t *cache, cache_info_t cache_info,
   else {
     // iterate through all possible positions and see if we find match
     for (uint8_t i = 0; i < cache_info.num_blocks; ++i) {
-      if (is_cache_line_valid(cache->data[i], access, cache_info)) {
+      if (is_cache_line_hit(cache->data[i], access, cache_info)) {
         return i;
       }
     }
@@ -259,18 +259,23 @@ bool perform_lookup(cache_data_t *this_cache, cache_data_t *other_cache,
   uint8_t res = get_index_if_present(this_cache, cache_info, access);
   // if cache miss
   if (res == UINT8_MAX) {
-    // insert it
-    insert_access(this_cache, cache_info, access);
-    // if split
+    uint8_t other_res;
+    // if other data type at same address has been loaded before, it is now invalid
+    access.accesstype = (access.accesstype == instruction) ? data : instruction;
+    cache_data_t *removed_from;
     if (cache_info.cache_org == sc) {
-      // search in other cache
-      uint8_t other_res = get_index_if_present(other_cache, cache_info, access);
-      // if present
-      if (other_res != UINT8_MAX) {
-        // then delete it
-        remove_index_from_cache(other_cache, other_res);
-      }
+      other_res = get_index_if_present(other_cache, cache_info, access);
+      removed_from = other_cache;
     }
+    else {
+      other_res = get_index_if_present(this_cache, cache_info, access);
+      removed_from = this_cache;
+    }
+    if (other_res != UINT8_MAX) {
+      // then delete it
+      remove_index_from_cache(other_cache, other_res);
+    }
+    insert_access(this_cache, cache_info, access);
     return false;
   }
   return true;
@@ -374,7 +379,7 @@ void main(int argc, char **argv) {
 
   /* Open the file mem_trace.txt to read memory accesses */
   FILE *ptr_file;
-  ptr_file = fopen("dm_fifty.txt", "r");
+  ptr_file = fopen("fa_fifty.txt", "r");
   if (!ptr_file) {
     printf("Unable to open the trace file\n");
     exit(1);
