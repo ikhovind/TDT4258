@@ -140,9 +140,9 @@ uint32_t get_access_tag(cache_info_t cache_info, mem_access_t mem_access) {
  */
 uint32_t get_cache_tag(cache_info_t cache_info, uint32_t line_info) {
   // remove validity bit
-  uint32_t tag_bytes = line_info & ((1 << 31) - 1);
+  uint32_t tag_bytes = line_info & ((1 << 30) - 1);
   // get tag part
-  return tag_bytes >> (32 - 1 - cache_info.num_tag_bits);
+  return tag_bytes >> (32 - 2 - cache_info.num_tag_bits);
 }
 
 // checks validity bit
@@ -153,24 +153,25 @@ bool is_valid(uint32_t line_info) { return line_info & 0x80000000; }
  */
 void insert_access(cache_data_t *cache, cache_info_t cache_info,
                    mem_access_t access) {
+  uint32_t validity_and_instruction_bits = (access.accesstype == instruction) ? 0xC0000000 : 0x80000000;
   if (cache_info.cache_mapping == dm) {
     // get access tag
     uint32_t shifted_acc_tag = get_access_tag(cache_info, access)
-                               << (32 - 1 - cache_info.num_tag_bits);
+                               << (32 - 2 - cache_info.num_tag_bits);
 
     uint32_t index = get_dm_index(cache_info, access.address);
     // set access tag
     cache->data[index] = shifted_acc_tag;
     // set validity bit
-    cache->data[index] |= 0x80000000;
+    cache->data[index] |= validity_and_instruction_bits;
   } else {
     uint32_t shifted_acc_tag = get_access_tag(cache_info, access)
-                               << (32 - 1 - cache_info.num_tag_bits);
+                               << (32 - 2 - cache_info.num_tag_bits);
     uint8_t index = get_next_fa_index(cache, cache_info);
     // set tag
     cache->data[index] = shifted_acc_tag;
     // set validity bit
-    cache->data[index] |= 0x80000000;
+    cache->data[index] |= validity_and_instruction_bits;
 
     // add new item to fifo queue
     fifo_node_t *next_item = malloc(sizeof(fifo_node_t));
@@ -210,6 +211,11 @@ void remove_index_from_cache(cache_data_t *cache, uint8_t index) {
   }
 }
 
+
+access_t get_cache_line_access_type(uint32_t cache_line) {
+  return (cache_line & 0x40000000) ? instruction : data;
+}
+
 /**
  * Checks whether or not a given data_cache line contains data for the given
  * access
@@ -222,8 +228,8 @@ void remove_index_from_cache(cache_data_t *cache, uint8_t index) {
 bool is_cache_line_hit(uint32_t cache_line, mem_access_t access,
                          cache_info_t cache_info) {
   if (is_valid(cache_line)) {
-    if (get_access_tag(cache_info, access) ==
-        get_cache_tag(cache_info, cache_line)) {
+    if (get_access_tag(cache_info, access) == get_cache_tag(cache_info, cache_line)
+        && get_cache_line_access_type(cache_line) == access.accesstype) {
       return true;
     }
   }
@@ -262,19 +268,23 @@ bool perform_lookup(cache_data_t *this_cache, cache_data_t *other_cache,
     uint8_t other_res;
     // if other data type at same address has been loaded before, it is now invalid
     access.accesstype = (access.accesstype == instruction) ? data : instruction;
+    // the data a possible conflict will be removed from
     cache_data_t *removed_from;
+    // if split cache we want to check other cache for conflicting data
     if (cache_info.cache_org == sc) {
       other_res = get_index_if_present(other_cache, cache_info, access);
       removed_from = other_cache;
     }
+    // if unified cache we want to check the same cache for conflict
     else {
       other_res = get_index_if_present(this_cache, cache_info, access);
       removed_from = this_cache;
     }
+    // found conflict
     if (other_res != UINT8_MAX) {
-      // then delete it
-      remove_index_from_cache(other_cache, other_res);
+      remove_index_from_cache(removed_from, other_res);
     }
+    access.accesstype = (access.accesstype == instruction) ? data : instruction;
     insert_access(this_cache, cache_info, access);
     return false;
   }
