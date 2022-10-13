@@ -15,6 +15,11 @@
 #define WHITE 0xFFFF
 #define DIM 8 
 
+#define UP 105
+#define DOWN 106
+#define LEFT 103
+#define RIGHT 108
+
 struct input_event ev;
 
 void fill(short *fb, short len, short value) {
@@ -53,16 +58,16 @@ int main() {
     if (ev.value != 0) {
       fb[column * 8 + row] = 0;
       switch (ev.code) {
-        case 103:
+        case LEFT:
           column = positive_modulo(column - 1, 8);
           break;
-        case 105:
+        case UP:
           row = positive_modulo(row - 1, 8);
           break;
-        case 106:
+        case DOWN:
           row = positive_modulo(row + 1, 8);
           break;
-        case 108:
+        case RIGHT:
           column = positive_modulo(column + 1, 8);
           break;
       }
