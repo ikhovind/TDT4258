@@ -20,16 +20,17 @@
 #define WHITE 0xFFFF
 #define DIM 8 
 
-#define UP 105
-#define DOWN 106
-#define LEFT 103
-#define RIGHT 108
-
 // The game state can be used to detect what happens on the playfield
 #define GAMEOVER   0
 #define ACTIVE     (1 << 0)
 #define ROW_CLEAR  (1 << 1)
 #define TILE_ADDED (1 << 2)
+
+#define JOY_ENTER 28
+#define UP 103
+#define DOWN 108
+#define LEFT 105
+#define RIGHT 106
 
 // If you extend this structure, either avoid pointers or adjust
 // the game logic allocate/deallocate and reset the memory
@@ -45,7 +46,9 @@ typedef struct {
 
 typedef struct {
   unsigned short *display;
+  int joystick_fd;
 } Hat;
+
 
 typedef struct {
   coord const grid;                     // playfield bounds
@@ -89,6 +92,11 @@ bool initializeSenseHat() {
     printf("could not open fb0");
     return false;
   }
+  hat.joystick_fd = open("/dev/input/event0", O_RDONLY);
+  if (!hat.joystick_fd) {
+    printf("could not open fb0");
+    return false;
+  }
 
   hat.display = (short*) mmap(0, 8 * 8 * sizeof(short), PROT_WRITE | PROT_READ, MAP_SHARED, fd, 0);
   close(fd);
@@ -106,6 +114,32 @@ void freeSenseHat() {
 // and KEY_ENTER, when the the joystick is pressed
 // !!! when nothing was pressed you MUST return 0 !!!
 int readSenseHatJoystick() {
+  struct pollfd pollStdin = {
+       .fd = hat.joystick_fd,
+       .events = POLLIN
+  };
+
+  struct input_event joy_evt;
+
+  if (poll(&pollStdin, 1, 0)) {
+    read(hat.joystick_fd, &joy_evt, sizeof(struct input_event));
+    if (joy_evt.value != 0) {
+      switch (joy_evt.code) {
+        case LEFT:
+          return KEY_LEFT;
+        case UP:
+          return KEY_UP;
+        case DOWN:
+          return KEY_DOWN;
+        case RIGHT:
+          return KEY_RIGHT;
+        case JOY_ENTER:
+          return KEY_ENTER;
+        default:
+          return 0;
+      }
+    }
+  }
   return 0;
 }
 

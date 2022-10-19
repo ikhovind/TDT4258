@@ -56,6 +56,7 @@ int main() {
   while(1) {
     read(fd2, &ev, sizeof(struct input_event));
     if (ev.value != 0) {
+      printf("code is: %d", ev.code);
       fb[column * 8 + row] = 0;
       switch (ev.code) {
         case LEFT:
