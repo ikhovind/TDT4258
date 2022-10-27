@@ -90,24 +90,27 @@ bool initializeSenseHat() {
   printf("initializing sense hat");
   struct fb_fix_screeninfo info;
   bool found = false;
-  char address[] = "/dev/fb0";
+  char led_address[] = "/dev/fb0";
+  char joy_address[] = "/dev/input/event0";
+  char joystick_name[256];
   int ix = 7;
+  int joy_ix = 16;
   int fd;
   for (int i = 0; i < 10; ++i) {
-    fd = open(address, O_RDWR);
+    fd = open(led_address, O_RDWR);
     if (!fd) {
-      printf("could not open fb0");
+      printf("could not open fd\n");
     }
     else {
       printf("ioctl\n");
       ioctl(fd, FBIOGET_FSCREENINFO, &info);
       printf("%s", info.id);
       if (!strcmp("RPi-Sense FB", info.id)) {
-        printf("found correct id\n");
+        printf("found correct sense hat led\n");
         break;
       }
       else {
-        printf("did not find id\n");
+        printf("did not find sense hat led\n");
         close(fd);
       }
     }
@@ -115,14 +118,28 @@ bool initializeSenseHat() {
       printf("could not find sense hat, exiting\n");
       exit(1);
     }
-    address[ix]++;
+    led_address[ix]++;
   }
 
-  hat.joystick_fd = open("/dev/input/event0", O_RDONLY);
-  if (!hat.joystick_fd) {
-    printf("could not open fb0");
-    return false;
+  for (int i = 0; i < 10; ++i) {
+    hat.joystick_fd = open(joy_address, O_RDONLY);
+    if (hat.joystick_fd) {
+       ioctl(hat.joystick_fd, EVIOCGNAME(sizeof(joystick_name)), joystick_name);
+       if (!strcmp(joystick_name, "Raspberry Pi Sense HAT Joystick")) {
+         printf("Found correct sense hat joystick\n");
+         break;
+       }
+    }
+    else {
+      printf("could not open fb0\n");
+    }
+    if (i == 9) {
+      printf("Could not find sense hat joystick, exiting\n");
+        exit(1);
+    }
+    joy_address[joy_ix]++;
   }
+
 
   hat.display = (short*) mmap(0, 8 * 8 * sizeof(short), PROT_WRITE | PROT_READ, MAP_SHARED, fd, 0);
   close(fd);
