@@ -87,11 +87,37 @@ gameConfig game = {
 // Here you can initialize what ever you need for your task
 // return false if something fails, else true
 bool initializeSenseHat() {
-  int fd = open("/dev/fb0", O_RDWR);
-  if (!fd) {
-    printf("could not open fb0");
-    return false;
+  printf("initializing sense hat");
+  struct fb_fix_screeninfo info;
+  bool found = false;
+  char address[] = "/dev/fb0";
+  int ix = 7;
+  int fd;
+  for (int i = 0; i < 10; ++i) {
+    fd = open(address, O_RDWR);
+    if (!fd) {
+      printf("could not open fb0");
+    }
+    else {
+      printf("ioctl\n");
+      ioctl(fd, FBIOGET_FSCREENINFO, &info);
+      printf("%s", info.id);
+      if (!strcmp("RPi-Sense FB", info.id)) {
+        printf("found correct id\n");
+        break;
+      }
+      else {
+        printf("did not find id\n");
+        close(fd);
+      }
+    }
+    if (i == 9) {
+      printf("could not find sense hat, exiting\n");
+      exit(1);
+    }
+    address[ix]++;
   }
+
   hat.joystick_fd = open("/dev/input/event0", O_RDONLY);
   if (!hat.joystick_fd) {
     printf("could not open fb0");
@@ -106,7 +132,7 @@ bool initializeSenseHat() {
 // This function is called when the application exits
 // Here you can free up everything that you might have opened/allocated
 void freeSenseHat() {
-
+  close(hat.joystick_fd);
 }
 
 // This function should return the key that corresponds to the joystick press
@@ -401,6 +427,7 @@ void renderConsole(bool const playfieldChanged) {
   if (!playfieldChanged)
     return;
 
+  /*
   // Goto beginning of console
   fprintf(stdout, "\033[%d;%dH", 0, 0);
   for (unsigned int x = 0; x < game.grid.x + 2; x ++) {
@@ -437,6 +464,7 @@ void renderConsole(bool const playfieldChanged) {
     fprintf(stdout, "-");
   }
   fflush(stdout);
+  */
 }
 
 
