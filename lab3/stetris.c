@@ -443,8 +443,6 @@ int readKeyboard() {
 void renderConsole(bool const playfieldChanged) {
   if (!playfieldChanged)
     return;
-
-  /*
   // Goto beginning of console
   fprintf(stdout, "\033[%d;%dH", 0, 0);
   for (unsigned int x = 0; x < game.grid.x + 2; x ++) {
@@ -481,7 +479,6 @@ void renderConsole(bool const playfieldChanged) {
     fprintf(stdout, "-");
   }
   fflush(stdout);
-  */
 }
 
 
